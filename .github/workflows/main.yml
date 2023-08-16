@@ -1,0 +1,43 @@
+name: GitHub Actions CI
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: GitOps Workflow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Build an image from Dockerfile
+        run: |
+          DOCKER_BUILDKIT=1 docker image build . -f app/Dockerfile --tag ${{ secrets.DOCKER_USERNAME }}/gitops-go-app:${{ github.run_number }}
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ secrets.DOCKER_USERNAME }}/gitops-go-app:${{ github.run_number }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+      - name: Push image to Docker Hub
+        run: |
+          docker login docker.io --username ${{ secrets.DOCKER_USERNAME }} --password ${{ secrets.PASSWORD }}
+          docker image push ${{ secrets.DOCKER_USERNAME }}/gitops-go-app:${{ github.run_number }}
+      - name: Update values.yaml & Pull Request to Config Repository
+        run: |
+          echo -e "machine github.com\nlogin ${{ secrets.GIT_USERNAME }}\npassword ${{ secrets.PERSONAL_ACCESS_TOKEN }}" > ~/.netrc
+          git clone https://github.com/${{ secrets.GIT_USERNAME }}/config.git
+          cd config/gitops-helm
+          git config --global user.email "${{ secrets.EMAIL }}"
+          git config --global user.name "${{ secrets.GIT_USERNAME }}"
+          git branch feature/${{ github.run_number }}
+          git checkout feature/${{ github.run_number }}
+          sed -i 's/tag: [0-9]*/tag: ${{ github.run_number }}/g' values.yaml
+          git add values.yaml
+          git commit -m "Update tag ${{ github.run_number }}"
+          git push origin feature/${{ github.run_number }}
+          echo ${{ secrets.PERSONAL_ACCESS_TOKEN }} > token.txt
+          gh auth login --with-token < token.txt
+          gh pr create --title "Update Tag ${{ github.run_number }}" --body "Please Merge !!"
